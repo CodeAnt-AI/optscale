@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optscale-analysis"
+version = "0.1.0"
+description = "Service-free OptScale analysis for background cloud scanners"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = []
+
+[project.optional-dependencies]
+aws = ["boto3>=1.34,<2"]
+
+[project.scripts]
+optscale-scan = "optscale_sdk.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -59,6 +59,13 @@ spec:
         ports:
         - containerPort: {{ $config.service.internalPort }}
         env:
+{{- if .Values.codeant_integration_secret_name }}
+        - name: CODEANT_INTEGRATION_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.codeant_integration_secret_name }}
+              key: service-key
+{{- end }}
         - name: IMAGE_ID
           value: {{ $config.image.id }}
         - name: HX_ETCD_HOST

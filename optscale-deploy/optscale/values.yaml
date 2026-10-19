@@ -1157,3 +1157,6 @@ opentelemetry:
   exporter: 
     type: otlp
     connection_string: http://tempo.default.svc.cluster.local:4317
+
+# Existing Secret containing service-key; empty disables CodeAnt service auth.
+codeant_integration_secret_name: ""

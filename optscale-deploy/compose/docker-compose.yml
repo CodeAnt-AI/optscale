@@ -290,6 +290,7 @@ services:
     <<: *restart
     environment:
       <<: *etcd-env
+      CODEANT_INTEGRATION_SECRET: ${CODEANT_INTEGRATION_SECRET:-}
       OTEL_ENABLED: "false"
     depends_on:
       configurator:

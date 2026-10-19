@@ -1,0 +1,162 @@
+{
+  "setup": {
+    "method": "PUT",
+    "path": "/setup",
+    "route": null
+  },
+  "summary": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/summary",
+    "route": "organization_summary"
+  },
+  "expenses": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/summary_expenses",
+    "route": "summary_expenses"
+  },
+  "breakdown": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/breakdown_expenses",
+    "route": "breakdown_expenses"
+  },
+  "resources": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/clean_expenses",
+    "route": "clean_expenses"
+  },
+  "filters": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/available_filters",
+    "route": "available_filters"
+  },
+  "tags": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/breakdown_tags",
+    "route": "breakdown_tags"
+  },
+  "metadata": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/breakdown_meta",
+    "route": "breakdown_meta"
+  },
+  "recommendations": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/optimizations",
+    "route": "optimizations"
+  },
+  "recommendation-data": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/optimization_data",
+    "route": "optimization_data"
+  },
+  "reserved-instances": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/ri_breakdown",
+    "route": "ri_breakdown"
+  },
+  "savings-plans": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/sp_breakdown",
+    "route": "sp_breakdown"
+  },
+  "offers": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/offer_breakdown",
+    "route": "offer_breakdown"
+  },
+  "reservation-groups": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/ri_group_breakdown",
+    "route": "ri_group_breakdown"
+  },
+  "traffic": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/traffic_expenses",
+    "route": "traffic_expenses"
+  },
+  "constraints": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/organization_constraints",
+    "route": "organization_constraints_collection"
+  },
+  "limit-hits": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/organization_limit_hits",
+    "route": "organization_limit_hits_collection"
+  },
+  "accounts": {
+    "method": "GET",
+    "path": "/organizations/{organization_id}/cloud_accounts",
+    "route": "cloud_account_collection"
+  },
+  "accounts/create": {
+    "method": "POST",
+    "path": "/organizations/{organization_id}/cloud_accounts",
+    "route": "cloud_account_collection"
+  },
+  "accounts/get": {
+    "method": "GET",
+    "path": "/cloud_accounts/{cloud_account_id}",
+    "route": "cloud_account"
+  },
+  "accounts/update": {
+    "method": "PATCH",
+    "path": "/cloud_accounts/{cloud_account_id}",
+    "route": "cloud_account"
+  },
+  "accounts/delete": {
+    "method": "DELETE",
+    "path": "/cloud_accounts/{cloud_account_id}",
+    "route": "cloud_account"
+  },
+  "imports": {
+    "method": "GET",
+    "path": "/cloud_accounts/{cloud_account_id}/report_imports",
+    "route": "report_imports_collection"
+  },
+  "imports/create": {
+    "method": "POST",
+    "path": "/schedule_imports",
+    "route": "schedule_imports"
+  },
+  "resource-expenses": {
+    "method": "GET",
+    "path": "/resources/{resource_id}/raw_expenses",
+    "route": "raw_expenses"
+  },
+  "resource-metrics": {
+    "method": "GET",
+    "path": "/cloud_resources/{resource_id}/metrics",
+    "route": "resource_metrics"
+  },
+  "accounts/reuse/create": {
+    "method": "POST",
+    "path": "/organizations/{organization_id}/cloud_accounts",
+    "route": "cloud_account_collection"
+  },
+  "recommendations/update": {
+    "method": "PATCH",
+    "path": "/resources/{resource_id}/optimizations",
+    "route": "resource_optimizations"
+  },
+  "constraints/create": {
+    "method": "POST",
+    "path": "/organizations/{organization_id}/organization_constraints",
+    "route": "organization_constraints_collection"
+  },
+  "constraints/get": {
+    "method": "GET",
+    "path": "/organization_constraints/{constraint_id}",
+    "route": "organization_constraints"
+  },
+  "constraints/update": {
+    "method": "PATCH",
+    "path": "/organization_constraints/{constraint_id}",
+    "route": "organization_constraints"
+  },
+  "constraints/delete": {
+    "method": "DELETE",
+    "path": "/organization_constraints/{constraint_id}",
+    "route": "organization_constraints"
+  }
+}

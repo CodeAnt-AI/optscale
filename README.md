@@ -4,6 +4,11 @@
 
 # Open-Source FinOps & Cloud Cost Optimization Platform
 
+For embedded background analysis without deploying the platform, see the
+[standalone analysis SDK](sdk/README.md). It provides a Python API and JSON CLI
+for AWS cost recommendations, suitable for CodeAnt/Lambda scanner jobs, with no
+OptScale databases or supporting services.
+
 <p align="center">
 <a href="documentation/images/cover-GitHub.png"><img src="documentation/images/FinOps-platform.png" width="40%" align="middle"></a>
 </p>

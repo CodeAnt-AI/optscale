@@ -464,6 +464,9 @@ def get_handlers(handler_kwargs, version=None):
              h_v2.organization_subscription.PlanAsyncCollectionHandler,
              handler_kwargs),
         ])
+    if not version or version == "v2":
+        from rest_api.rest_api_server.handlers.codeant import integration_handlers
+        result.extend(integration_handlers(result, handler_kwargs))
     return result
 
 

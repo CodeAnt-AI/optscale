@@ -302,6 +302,7 @@ services:
     <<: [*optscale-app, *restart]
     environment:
       <<: *etcd-env
+      CODEANT_INTEGRATION_SECRET: ${CODEANT_INTEGRATION_SECRET:-}
       OPTSCALE_MODE: restapi
       OTEL_ENABLED: "false"
     depends_on:

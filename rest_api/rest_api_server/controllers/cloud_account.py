@@ -392,6 +392,15 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                 self.session.commit()
         except IntegrityError as ex:
             raise WrongArgumentsException(Err.OE0003, [str(ex)])
+        self._create_pool_and_rule(ca_obj)
+        if ca_obj.auto_import:
+            self._schedule_report_import(ca_obj)
+        self._publish_validation_warnings_activities(ca_obj, warnings)
+        self._publish_cloud_acc_activity(ca_obj, 'cloud_account_created')
+        self.send_cloud_account_email(ca_obj, action='created')
+        return ca_obj
+
+    def _create_pool_and_rule(self, ca_obj):
         cloud_account_org_id = ca_obj.organization_id
         parent_pool = ca_obj.organization.pool
         if ca_obj.parent_id:
@@ -415,12 +424,6 @@ class CloudAccountController(BaseController, ClickHouseMixin):
                 }
             ]
         )
-        if ca_obj.auto_import:
-            self._schedule_report_import(ca_obj)
-        self._publish_validation_warnings_activities(ca_obj, warnings)
-        self._publish_cloud_acc_activity(ca_obj, 'cloud_account_created')
-        self.send_cloud_account_email(ca_obj, action='created')
-        return ca_obj
 
     def _schedule_report_import(self, ca_obj):
         # schedule report import for this CA immediately

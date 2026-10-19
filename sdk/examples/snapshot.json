@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "account_id": "123456789012",
+  "region": "us-east-1",
+  "collected_at": 1800000000,
+  "collection": {"volume": true},
+  "resources": [
+    {
+      "type": "volume",
+      "id": "vol-example",
+      "arn": "arn:aws:ec2:us-east-1:123456789012:volume/vol-example",
+      "unused": true,
+      "unused_since": 1799308800,
+      "cost": {"average_daily_cost": 0.8, "currency": "USD"}
+    }
+  ]
+}
