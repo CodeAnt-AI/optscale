@@ -1,13 +1,13 @@
 # OptScale analysis SDK
 
-An installable, service-free extraction of OptScale's AWS recommendation logic
-for CodeAnt background scanners. Python 3.10+ (including CodeAnt's Python 3.11).
+An installable, service-free extraction of OptScale's AWS recommendations,
+resource inventory and daily anomaly checks for CodeAnt background scanners. Python 3.10+ (including CodeAnt's Python 3.11).
 The core has **no runtime dependencies**; live AWS collection uses optional boto3.
 The wheel contains only `optscale_sdk`, not the OptScale platform, cloud-adapter
 dependency tree, databases, HTTP servers, queues, schedulers or UI.
 
-This first version prioritizes AWS cost recommendations. It is not full OptScale
-feature parity or a replacement for the existing `/finops/*` HTTP contract.
+It supports focused AWS operations rather than full OptScale feature parity.
+It does not replace the existing `/finops/*` HTTP contract.
 Original platform code remains available in the repository but is not imported
 or installed by the SDK.
 
@@ -40,7 +40,25 @@ No AWS resources are created and no OptScale server URL is needed. Existing IAM
 access and network connectivity to regional AWS APIs are required.
 
 One invocation scans one account and one explicit region. CodeAnt owns fan-out,
-scheduling and result/state storage. Use `--rules RULE_ID ...` to shard further.
+scheduling and result/state storage. Use `--rules RULE_ID ...` to shard recommendations,
+`--resource-types TYPE ...` to shard inventory, and `--anomaly-types TYPE ...` to
+select anomaly checks. `--mode` defaults to `recommendations`, preserving existing
+CLI calls. Each mode runs as its own short-lived JSON CLI process:
+
+```sh
+optscale-scan --mode recommendations --region us-east-1 --account-id 123456789012
+optscale-scan --mode resources --region us-east-1 --account-id 123456789012 \
+  --resource-types instance volume elastic_ip
+optscale-scan --mode anomalies --region us-east-1 --account-id 123456789012 \
+  --lookback-days 7 --threshold-percent 30
+```
+
+All modes support `--input PATH` (or `-` for stdin), `--output PATH` and the same
+exit statuses. Live modes support `--timeout`, `--max-resources` and the AWS
+credential chain. Mode-specific flags from another operation fail explicitly.
+`python -m optscale_sdk` provides the same CLI. The Python equivalents are
+`analyze` / `scan_aws`, `inventory` / `collect_resources_aws`, and
+`detect_anomalies` / `scan_anomalies_aws`.
 
 ```python
 import boto3
@@ -69,7 +87,102 @@ cooperative scan deadline and a 660-second hard subprocess timeout. Provision
 enough time in the parent invocation to collect and persist results. The SDK
 does not start background threads that outlive the call.
 
-## Extracted rules
+## Resource inventory
+
+`--mode resources` returns EC2 instances, EBS volumes and allocated Elastic IPs,
+including tags and selected state/type/size fields. Inventory does not request
+CloudWatch, need observation history, estimate costs, or require resources to
+match a recommendation. Live output includes a normalized `snapshot`; replay
+it with `--mode resources --input snapshot.json`.
+
+Offline inventory uses the same envelope and resource identities as recommendation
+snapshots. Only `id`, `arn`, and `type` are required on each record; metrics and
+unused timestamps are optional. The `collection` map must explicitly identify
+complete resource types. Resources are filtered with `--resource-types` in both
+live and offline modes. Missing collection evidence, invalid identities, duplicate
+records, failed pages and resource limits yield partial results.
+
+Inventory results contain `resources`, `errors`, and
+`coverage.resource_types[TYPE]` with `complete` and `count`. They do not contain
+recommendation findings or history state. Reconcile inventory only for complete
+resource types. A complete inventory does not establish complete recommendations.
+
+```python
+from optscale_sdk import collect_resources_aws, inventory
+
+result = collect_resources_aws(region="us-east-1", account_id="123456789012",
+                               types=["instance", "volume"])
+replay = inventory(result["snapshot"], types=["instance", "volume"])
+```
+
+## Anomaly detection
+
+`--mode anomalies` uses the platform's percentage-above-mean predicate from
+`docker_images/organization_violations/worker.py::_process_anomaly`. It flags a
+value strictly greater than `historical_mean * (1 + threshold_percent / 100)`.
+Defaults match the platform: a seven-day baseline and a 30% increase threshold.
+Unlike the platform's billing breakdown handling, this standalone check requires
+every day in the baseline and target window to have explicit complete evidence.
+It evaluates a **closed UTC day** against the preceding consecutive days.
+Missing days are never filled with zero; insufficient history makes that series
+incomplete. A positive value above a zero baseline is a spike with
+`increase_percent: null`. Zero above zero is not a spike.
+
+Live AWS mode retrieves regional daily `UnblendedCost` totals from Cost Explorer,
+filtered by both the STS-verified `LINKED_ACCOUNT` and `REGION`. It does not query
+payer-wide totals or assign regional costs to individual resources. The target
+is yesterday UTC by default; `--date YYYY-MM-DD` chooses an earlier closed day.
+Cost Explorer must already be available to the supplied role. This operation
+does not create an AWS anomaly detector or enable any AWS service. Global costs
+without the selected region are excluded. Estimated days remain incomplete, so
+recent billing often produces exit 2; rerun after AWS finalizes those days or
+choose an earlier target. Costs are nonnegative; credit/refund days with negative
+net totals are reported as invalid evidence rather than interpreted as usage.
+`--max-resources` bounds the number of daily billing records in this mode.
+
+Live collection supports `expense`. Resource-count history must be supplied by
+the caller with `--input`; select `--anomaly-types resource_count` or both types:
+
+```sh
+optscale-scan --mode anomalies --input sdk/examples/anomalies.json \
+  --anomaly-types expense resource_count --lookback-days 7 --threshold-percent 30
+```
+
+Anomaly input has `schema_version`, `account_id`, `region`, UTC Unix `collected_at`,
+an ISO `date` for the target, `collection` completeness keyed by anomaly type,
+and `series`. Each series contains:
+
+- `id`: caller-owned stable scope (e.g. `regional_total` or a service name).
+- `type`: `expense` or `resource_count` (default selection: `expense`).
+- `currency`: three-letter uppercase code, required for expense series.
+- `points`: daily objects with ISO `date`, nonnegative finite `value`, and boolean
+  `complete`. Counts must be integral. No duplicate dates or series IDs per type.
+
+The caller must ensure each series uses consistent scope, units and currency
+across days, and mark incomplete billing or inventory sources accordingly. Counts
+should come from complete historical inventory, not recommendation findings.
+`--lookback-days` accepts 1–180; `--threshold-percent` must be nonnegative and finite.
+Live output includes `snapshot` for offline replay. No observation `state` is used.
+
+Anomaly results contain `findings`, `errors`, and
+`coverage.anomaly_types[TYPE]` with `complete`, `evaluated`, `skipped`, and
+`findings`. Findings identify `rule_id`, `series_id`, date, current value,
+baseline average, threshold, increase percentage and currency. They are daily
+series alerts, not per-resource cost-saving recommendations: persist/reconcile
+by tenant/account/region/type/series/date, and retain old alerts for incomplete
+coverage. They do not share the recommendation ledger's `resource_arn + action`
+identity or savings fields. This check produces results only; notifications,
+alert storage and scheduling belong to CodeAnt.
+
+```python
+from optscale_sdk import detect_anomalies, scan_anomalies_aws
+
+result = scan_anomalies_aws(region="us-east-1", account_id="123456789012",
+                            lookback_days=7, threshold_percent=30)
+replay = detect_anomalies(result["snapshot"], lookback_days=7, threshold_percent=30)
+```
+
+## Extracted recommendation rules
 
 | Rule ID | Source in `bumiworker/bumiworker/modules/recommendations/` | Default |
 | --- | --- | --- |
@@ -124,8 +237,11 @@ scratch space; CodeAnt's existing blob storage can retain state between Lambdas.
 ## Result contract and failure handling
 
 Every result has `schema_version: 1`, `engine: "optscale"`, `account_id`, `region`,
-`collected_at`, `status`, `findings`, `errors`, and `coverage`. Live scans also
-return `snapshot` and `state`. API responses/credentials are not copied wholesale.
+`collected_at`, `status`, `errors`, and `coverage`. Recommendation and anomaly
+results contain `findings`; inventory contains `resources`. Live modes include
+`snapshot`; only live recommendations return `state`. API responses/credentials
+are not copied wholesale. The following rule and finding fields describe
+recommendation mode; other modes have the coverage/identity contracts above.
 
 `coverage.rules[RULE_ID]` contains `complete`, `evaluated`, `skipped` and
 `findings`. `coverage.completed` is true only when **all selected rules** completed
@@ -211,7 +327,9 @@ are rejected. No threshold configuration is stored globally between invocations.
 The caller supplies an existing role with read access to selected operations:
 `ec2:DescribeVolumes`, `ec2:DescribeAddresses`, `ec2:DescribeInstances`, and
 `cloudwatch:GetMetricStatistics` (idle instances only). The scanner also calls
-`sts:GetCallerIdentity` before inventory to verify its account. It does not
+`sts:GetCallerIdentity` before collection to verify its account. Resource mode
+needs only the selected EC2 Describe operations, without CloudWatch. Live anomaly
+mode needs `ce:GetCostAndUsage` and STS, without EC2 or CloudWatch. It does not
 perform AssumeRole itself, request billing exports, create metrics, or enroll
 the account in an optimization service.
 

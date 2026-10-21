@@ -6,7 +6,8 @@
 
 For embedded background analysis without deploying the platform, see the
 [standalone analysis SDK](sdk/README.md). It provides a Python API and JSON CLI
-for AWS cost recommendations, suitable for CodeAnt/Lambda scanner jobs, with no
+for AWS cost recommendations, resource inventory, and daily anomaly detection,
+suitable for CodeAnt/Lambda scanner jobs, with no
 OptScale databases or supporting services.
 
 <p align="center">

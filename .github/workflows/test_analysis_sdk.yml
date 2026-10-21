@@ -29,4 +29,7 @@ jobs:
           python -m pip install 'boto3>=1.34,<2'
           python -m unittest discover -s sdk/tests -p test_botocore.py -v
       - name: Exercise installed CLI
-        run: optscale-scan --input sdk/examples/snapshot.json --rules volumes_not_attached_for_a_long_time
+        run: |
+          optscale-scan --mode recommendations --input sdk/examples/snapshot.json --rules volumes_not_attached_for_a_long_time
+          optscale-scan --mode resources --input sdk/examples/snapshot.json --resource-types volume
+          optscale-scan --mode anomalies --input sdk/examples/anomalies.json --anomaly-types expense resource_count

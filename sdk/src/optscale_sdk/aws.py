@@ -1,12 +1,12 @@
 """Read-only AWS collectors, bounded to one account/region per invocation."""
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .analysis import DAY, analyze, number, rule_options, scope
 
 
-def _clients(session, region):
+def _clients(session, region, services=("sts", "ec2", "cloudwatch")):
     try:
         from botocore.config import Config
         if session is None:
@@ -17,7 +17,7 @@ def _clients(session, region):
     config = Config(connect_timeout=3, read_timeout=10,
                     retries={"mode": "standard", "total_max_attempts": 2})
     return {service: session.client(service, region_name=region, config=config)
-            for service in ("sts", "ec2", "cloudwatch")}
+            for service in services}
 
 
 def _timestamp(value):
@@ -212,4 +212,148 @@ def scan_aws(*, region, session=None, account_id=None, rules=None, options=None,
     result["snapshot"] = snapshot
     result["state"] = {"schema_version": 1, "account_id": account_id, "region": region,
                        "resources": observations}
+    return result
+
+
+def _operation_collector(session, region, account_id, timeout_seconds, max_records, services):
+    scope(account_id if account_id is not None else "000000000000", region)
+    number(timeout_seconds, "timeout_seconds", minimum=40, maximum=840)
+    number(max_records, "max_records", minimum=1)
+    if not isinstance(max_records, int):
+        raise ValueError("max_records must be an integer")
+    deadline = time.monotonic() + timeout_seconds
+    collector = _Collector(_clients(session, region, services), deadline, max_records)
+    identity = collector.call("sts", "get_caller_identity")
+    if account_id is not None and identity["Account"] != account_id:
+        raise ValueError("AWS credentials do not match the requested account")
+    scope(identity["Account"], region)
+    return collector, identity
+
+
+def _collection_error(error):
+    if isinstance(error, TimeoutError):
+        return "deadline_exceeded"
+    if isinstance(error, OverflowError):
+        return "resource_limit_exceeded"
+    return "collection_failed"
+
+
+def collect_resources_aws(*, region, session=None, account_id=None, types=None,
+                          timeout_seconds=600, max_resources=10000):
+    """Collect EC2 instances, EBS volumes and EIPs without recommendation metrics."""
+    from .resources import RESOURCE_TYPES, inventory, resource_types
+
+    selected = resource_types(types)
+    collector, identity = _operation_collector(
+        session, region, account_id, timeout_seconds, max_resources, ("sts", "ec2"))
+    account_id = identity["Account"]
+    partition = identity["Arn"].split(":")[1]
+    snapshot = {"schema_version": 1, "account_id": account_id, "region": region,
+                "collected_at": time.time(), "resources": [], "collection": {}}
+    errors = []
+    for kind in selected:
+        snapshot["collection"][kind] = False
+        method, key, id_field, arn_kind = RESOURCE_TYPES[kind]
+        try:
+            for raw in collector.records(method, key):
+                identifier = raw[id_field]
+                record = {"id": identifier, "type": kind,
+                          "arn": f"arn:{partition}:ec2:{region}:{account_id}:{arn_kind}/{identifier}",
+                          "tags": {tag["Key"]: tag["Value"] for tag in raw.get("Tags", [])}}
+                if kind == "instance":
+                    record.update(state=raw["State"]["Name"], instance_type=raw.get("InstanceType"),
+                                  running=raw["State"]["Name"] == "running",
+                                  launched_at=_timestamp(raw["LaunchTime"]))
+                elif kind == "volume":
+                    record.update(state=raw["State"], size_gib=raw.get("Size"),
+                                  volume_type=raw.get("VolumeType"),
+                                  unused=raw["State"] == "available" and not raw["Attachments"])
+                else:
+                    record.update(public_ip=raw.get("PublicIp"),
+                                  unused=not any(raw.get(field) for field in
+                                                 ("AssociationId", "NetworkInterfaceId", "InstanceId")))
+                snapshot["resources"].append(record)
+            snapshot["collection"][kind] = True
+        except Exception as error:
+            errors.append({"resource_type": kind, "code": _collection_error(error)})
+    result = inventory(snapshot, types=selected)
+    result["errors"].extend(errors)
+    if any(error["code"] == "deadline_exceeded" for error in errors):
+        result["status"] = "timed_out"
+    result["snapshot"] = snapshot
+    return result
+
+
+def scan_anomalies_aws(*, region, session=None, account_id=None, date=None,
+                       lookback_days=7, threshold_percent=30,
+                       timeout_seconds=600, max_resources=10000):
+    """Compare a closed day's regional UnblendedCost to preceding daily totals.
+
+    Cost Explorer is filtered to the verified account and requested region, even
+    when credentials belong to a payer account. Estimated days remain incomplete.
+    max_resources bounds daily records. No native AWS anomaly detector is needed.
+    """
+    from .anomalies import anomaly_options, detect_anomalies, parse_date
+
+    anomaly_options(["expense"], lookback_days, threshold_percent)
+    now = time.time()
+    today = datetime.fromtimestamp(now, timezone.utc).date()
+    target = today - timedelta(days=1) if date is None else parse_date(date)
+    if target >= today:
+        raise ValueError("The target must be a closed UTC day")
+    collector, identity = _operation_collector(
+        session, region, account_id, timeout_seconds, max_resources, ("sts", "ce"))
+    account_id = identity["Account"]
+    snapshot = {"schema_version": 1, "account_id": account_id, "region": region,
+                "collected_at": now, "date": target.isoformat(),
+                "collection": {"expense": False}, "series": []}
+    series = {"id": "regional_total", "type": "expense", "points": []}
+    errors, seen_days, seen_tokens = [], set(), set()
+    token = None
+    try:
+        while True:
+            request = {"TimePeriod": {"Start": (target - timedelta(days=lookback_days)).isoformat(),
+                                      "End": (target + timedelta(days=1)).isoformat()},
+                       "Granularity": "DAILY", "Metrics": ["UnblendedCost"],
+                       "Filter": {"And": [
+                           {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [account_id]}},
+                           {"Dimensions": {"Key": "REGION", "Values": [region]}}]}}
+            if token:
+                request["NextPageToken"] = token
+            response = collector.call("ce", "get_cost_and_usage", **request)
+            for row in response["ResultsByTime"]:
+                if collector.remaining <= 0:
+                    raise OverflowError("Daily record limit reached")
+                collector.remaining -= 1
+                day = parse_date(row["TimePeriod"]["Start"])
+                end = parse_date(row["TimePeriod"]["End"])
+                if (day in seen_days or end != day + timedelta(days=1)
+                        or not target - timedelta(days=lookback_days) <= day <= target):
+                    raise ValueError("Unexpected daily period")
+                seen_days.add(day)
+                metric = row["Total"]["UnblendedCost"]
+                currency = metric["Unit"]
+                if "currency" in series and series["currency"] != currency:
+                    raise ValueError("Mixed currencies")
+                value = number(float(metric["Amount"]), "daily cost")
+                series["currency"] = currency
+                series["points"].append({"date": day.isoformat(), "value": value,
+                                         "complete": row.get("Estimated") is False})
+            token = response.get("NextPageToken")
+            if not token:
+                snapshot["collection"]["expense"] = True
+                break
+            if token in seen_tokens:
+                raise ValueError("Repeated pagination token")
+            seen_tokens.add(token)
+    except Exception as error:
+        errors.append({"anomaly_type": "expense", "code": _collection_error(error)})
+    # Always include the expected series: an empty response is missing history.
+    snapshot["series"].append(series)
+    result = detect_anomalies(snapshot, lookback_days=lookback_days,
+                              threshold_percent=threshold_percent)
+    result["errors"].extend(errors)
+    if any(error["code"] == "deadline_exceeded" for error in errors):
+        result["status"] = "timed_out"
+    result["snapshot"] = snapshot
     return result

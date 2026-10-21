@@ -27,7 +27,7 @@ class NoOptScaleLoginTests(unittest.TestCase):
             with patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')), \\
                  patch('socket.create_connection', side_effect=AssertionError('Network forbidden')), \\
                  patch.dict('os.environ', {}, clear=True):
-                from optscale_sdk import analyze, scan_aws
+                from optscale_sdk import analyze, scan_aws, inventory, detect_anomalies
                 from optscale_sdk.cli import main
 
                 rule = 'volumes_not_attached_for_a_long_time'
@@ -37,6 +37,20 @@ class NoOptScaleLoginTests(unittest.TestCase):
                     'resources': [], 'collection': {'volume': True},
                 }
                 assert analyze(snapshot, rules=[rule])['status'] == 'complete'
+                assert inventory(snapshot, types=['volume'])['status'] == 'complete'
+                anomaly_input = {
+                    'schema_version': 1, 'account_id': '123456789012',
+                    'region': 'us-east-1', 'collected_at': 1800000000,
+                    'date': '2026-10-20', 'series': [], 'collection': {'expense': True},
+                }
+                assert detect_anomalies(anomaly_input)['status'] == 'complete'
+                for mode, data, flags in (
+                    ('resources', snapshot, ['--resource-types', 'volume']),
+                    ('anomalies', anomaly_input, []),
+                ):
+                    with patch('sys.stdin', io.StringIO(json.dumps(data))), \\
+                         contextlib.redirect_stdout(io.StringIO()):
+                        assert main(['--mode', mode, '--input', '-', *flags]) == 0
                 with patch('sys.stdin', io.StringIO(json.dumps(snapshot))), \\
                      contextlib.redirect_stdout(io.StringIO()) as output:
                     assert main(['--input', '-', '--rules', rule]) == 0

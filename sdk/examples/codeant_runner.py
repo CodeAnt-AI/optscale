@@ -1,8 +1,9 @@
 """Copy/adapt into CodeAnt's background scan worker; no new infrastructure.
 
 Install optscale-analysis[aws] into the same Python environment as this runner.
-The caller supplies already-assumed-role credentials and stores result['state']
-using its existing per-tenant/account/region blob storage.
+The caller supplies already-assumed-role credentials. Recommendation jobs store
+result['state'] using existing per-tenant/account/region blob storage. Set mode
+to resources or anomalies to run those operations in separate CLI processes.
 """
 
 import json
@@ -13,14 +14,23 @@ import sys
 import tempfile
 
 
-def run_optscale(credentials, region, previous_state=None, *, rules=None):
+def run_optscale(credentials, region, previous_state=None, *, mode="recommendations",
+                 rules=None, resource_types=None, anomaly_types=None,
+                 lookback_days=7, threshold_percent=30):
     with tempfile.TemporaryDirectory(prefix="optscale-") as directory:
         output = Path(directory) / "result.json"
         command = [sys.executable, "-m", "optscale_sdk", "--region", region,
-                   "--account-id", credentials["account_id"],
+                   "--account-id", credentials["account_id"], "--mode", mode,
                    "--timeout", "600", "--output", str(output)]
         if rules is not None:
             command.extend(["--rules", *rules])
+        if resource_types is not None:
+            command.extend(["--resource-types", *resource_types])
+        if anomaly_types is not None:
+            command.extend(["--anomaly-types", *anomaly_types])
+        if mode == "anomalies":
+            command.extend(["--lookback-days", str(lookback_days),
+                            "--threshold-percent", str(threshold_percent)])
         if previous_state is not None:
             state_path = Path(directory) / "state.json"
             state_path.write_text(json.dumps(previous_state), encoding="utf-8")

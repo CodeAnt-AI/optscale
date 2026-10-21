@@ -11,7 +11,7 @@ try:
 except ImportError:
     boto3 = None
 
-from optscale_sdk import scan_aws
+from optscale_sdk import collect_resources_aws, scan_anomalies_aws, scan_aws
 from optscale_sdk.aws import _clients
 from optscale_sdk.analysis import DAY
 from test_analysis import ACCOUNT, REGION, NOW, INSTANCE_RULE, VOLUME_RULE
@@ -19,10 +19,10 @@ from test_analysis import ACCOUNT, REGION, NOW, INSTANCE_RULE, VOLUME_RULE
 
 @unittest.skipIf(boto3 is None, "Install the aws extra to run botocore contract tests")
 class BotocoreTests(unittest.TestCase):
-    def clients(self):
+    def clients(self, services=("sts", "ec2", "cloudwatch")):
         session = boto3.Session(aws_access_key_id="testing", aws_secret_access_key="testing",
                                 aws_session_token="testing", region_name=REGION)
-        return _clients(session, REGION)
+        return _clients(session, REGION, services)
 
     def identity(self, stub):
         stub.add_response("get_caller_identity", {
@@ -79,3 +79,40 @@ class BotocoreTests(unittest.TestCase):
             self.assertNotIn("SECRET_TOKEN", str(result))
             sts.assert_no_pending_responses()
             ec2.assert_no_pending_responses()
+
+    def test_inventory_api_contract_without_cloudwatch(self):
+        clients = self.clients(("sts", "ec2"))
+        with Stubber(clients["sts"]) as sts, Stubber(clients["ec2"]) as ec2:
+            self.identity(sts)
+            ec2.add_response("describe_volumes", {"Volumes": [{
+                "VolumeId": "vol-123", "State": "available", "Attachments": [],
+                "Size": 10, "VolumeType": "gp3", "Tags": [{"Key": "Name", "Value": "test"}]}]}, {})
+            with patch("optscale_sdk.aws._clients", return_value=clients):
+                result = collect_resources_aws(region=REGION, types=["volume"])
+            self.assertEqual(result["status"], "complete", result["errors"])
+            self.assertEqual(result["resources"][0]["size_gib"], 10)
+            sts.assert_no_pending_responses()
+            ec2.assert_no_pending_responses()
+
+    def test_cost_explorer_api_contract(self):
+        from datetime import timedelta
+        from test_modes import TARGET, ce_rows
+
+        clients = self.clients(("sts", "ce"))
+        with Stubber(clients["sts"]) as sts, Stubber(clients["ce"]) as ce:
+            self.identity(sts)
+            ce.add_response("get_cost_and_usage", {"ResultsByTime": ce_rows()}, {
+                "TimePeriod": {"Start": (TARGET - timedelta(days=7)).isoformat(),
+                               "End": (TARGET + timedelta(days=1)).isoformat()},
+                "Granularity": "DAILY", "Metrics": ["UnblendedCost"],
+                "Filter": {"And": [
+                    {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [ACCOUNT]}},
+                    {"Dimensions": {"Key": "REGION", "Values": [REGION]}}]},
+            })
+            with patch("optscale_sdk.aws._clients", return_value=clients), \
+                    patch("optscale_sdk.aws.time.time", return_value=NOW):
+                result = scan_anomalies_aws(region=REGION, account_id=ACCOUNT)
+            self.assertEqual(result["status"], "complete", result["errors"])
+            self.assertEqual(len(result["findings"]), 1)
+            sts.assert_no_pending_responses()
+            ce.assert_no_pending_responses()
