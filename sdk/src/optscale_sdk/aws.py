@@ -240,12 +240,14 @@ def _collection_error(error):
 
 def collect_resources_aws(*, region, session=None, account_id=None, types=None,
                           timeout_seconds=600, max_resources=10000):
-    """Collect EC2 instances, EBS volumes and EIPs without recommendation metrics."""
-    from .resources import RESOURCE_TYPES, inventory, resource_types
+    """Collect selected AWS resource types without recommendation eligibility checks."""
+    from .resources import LEGACY_RESOURCE_TYPES, inventory, resource_types
+    from .inventory_aws import COLLECTORS, collect_type
 
     selected = resource_types(types)
+    services = tuple(dict.fromkeys(["sts"] + [COLLECTORS[kind][0] if kind in COLLECTORS else "ec2" for kind in selected]))
     collector, identity = _operation_collector(
-        session, region, account_id, timeout_seconds, max_resources, ("sts", "ec2"))
+        session, region, account_id, timeout_seconds, max_resources, services)
     account_id = identity["Account"]
     partition = identity["Arn"].split(":")[1]
     snapshot = {"schema_version": 1, "account_id": account_id, "region": region,
@@ -253,11 +255,17 @@ def collect_resources_aws(*, region, session=None, account_id=None, types=None,
     errors = []
     for kind in selected:
         snapshot["collection"][kind] = False
-        method, key, id_field, arn_kind = RESOURCE_TYPES[kind]
         try:
+            if kind in COLLECTORS:
+                for record in collect_type(collector, kind, account_id, region, partition):
+                    snapshot["resources"].append(record)
+                snapshot["collection"][kind] = True
+                continue
+            method, key, id_field, arn_kind = LEGACY_RESOURCE_TYPES[kind]
             for raw in collector.records(method, key):
                 identifier = raw[id_field]
-                record = {"id": identifier, "type": kind,
+                record = {"id": identifier, "type": kind, "service": "ec2",
+                          "region": region, "account_id": account_id,
                           "arn": f"arn:{partition}:ec2:{region}:{account_id}:{arn_kind}/{identifier}",
                           "tags": {tag["Key"]: tag["Value"] for tag in raw.get("Tags", [])}}
                 if kind == "instance":
@@ -355,5 +363,7 @@ def scan_anomalies_aws(*, region, session=None, account_id=None, date=None,
     result["errors"].extend(errors)
     if any(error["code"] == "deadline_exceeded" for error in errors):
         result["status"] = "timed_out"
+    result["daily_expenses"] = [dict(point, region=region, currency=series.get("currency"),
+                                      metric="UnblendedCost") for point in series["points"]]
     result["snapshot"] = snapshot
     return result

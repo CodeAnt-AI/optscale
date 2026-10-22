@@ -1,19 +1,23 @@
 """Normalized resource inventory independent of recommendation eligibility."""
 
 import copy
+from collections import Counter
 import re
 
 from .analysis import number, scope
+from .inventory_aws import ARN_TYPES, COLLECTORS
 
-RESOURCE_TYPES = {
+LEGACY_RESOURCE_TYPES = {
     "volume": ("describe_volumes", "Volumes", "VolumeId", "volume"),
     "elastic_ip": ("describe_addresses", "Addresses", "AllocationId", "elastic-ip"),
     "instance": ("describe_instances", "Reservations", "InstanceId", "instance"),
 }
 
+RESOURCE_TYPES = {**LEGACY_RESOURCE_TYPES, **COLLECTORS}
+
 
 def resource_types(selected=None):
-    selected = list(RESOURCE_TYPES) if selected is None else list(selected)
+    selected = list(LEGACY_RESOURCE_TYPES) if selected is None else list(selected)
     if (not selected or len(set(selected)) != len(selected)
             or any(kind not in RESOURCE_TYPES for kind in selected)):
         raise ValueError("Select supported resource types without duplicates")
@@ -26,10 +30,26 @@ def validate_resource(record, account_id, region):
     identifier = record.get("id")
     if not isinstance(identifier, str) or not identifier:
         raise ValueError("Missing resource ID")
-    kind = RESOURCE_TYPES[record["type"]][3]
-    expected = f":ec2:{region}:{account_id}:{kind}/{identifier}"
+    kind = record["type"]
     arn = record.get("arn")
-    if not isinstance(arn, str) or not re.fullmatch(r"arn:aws(?:-[a-z]+)*" + re.escape(expected), arn):
+    if not isinstance(arn, str):
+        raise ValueError("Missing resource ARN")
+    parts = arn.split(":", 5)
+    if len(parts) != 6 or not re.fullmatch(r"aws(?:-[a-z]+)*", parts[1]) or parts[0] != "arn":
+        raise ValueError("Invalid ARN")
+    if kind in LEGACY_RESOURCE_TYPES:
+        service, prefix = "ec2", LEGACY_RESOURCE_TYPES[kind][3] + "/"
+    else:
+        service, prefix = ARN_TYPES[kind]
+    if kind == "s3_bucket":
+        valid = (parts[2:5] == ["s3", "", ""] and parts[5] == identifier
+                 and record.get("account_id") == account_id and record.get("region") == region)
+    else:
+        valid = (parts[2:5] == [service, region, account_id] and parts[5].startswith(prefix)
+                 and len(parts[5]) > len(prefix))
+        if kind in LEGACY_RESOURCE_TYPES:
+            valid = valid and parts[5] == prefix + identifier
+    if not valid or record.get("service", service) != service:
         raise ValueError("Resource ARN does not match snapshot scope")
 
 
@@ -70,4 +90,7 @@ def inventory(snapshot, *, types=None):
             "account_id": snapshot["account_id"], "region": snapshot["region"],
             "collected_at": now, "status": "complete" if complete else "partial",
             "resources": resources, "errors": errors,
+            "summary": {"total": len(resources),
+                        "by_type": dict(Counter(record["type"] for record in resources)),
+                        "by_service": dict(Counter(record["arn"].split(":")[2] for record in resources))},
             "coverage": {"completed": complete, "resource_types": coverage}}

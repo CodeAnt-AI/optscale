@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "account_id": "123456789012",
+  "region": "us-east-1",
+  "collected_at": 1792627200.0,
+  "start_date": "2026-10-01",
+  "end_date": "2026-10-03",
+  "metric": "UnblendedCost",
+  "group_by": [
+    "service",
+    "region"
+  ],
+  "collection_complete": true,
+  "days": {
+    "2026-10-01": {
+      "returned": true,
+      "estimated": false
+    },
+    "2026-10-02": {
+      "returned": true,
+      "estimated": false
+    }
+  },
+  "expenses": [
+    {
+      "date": "2026-10-01",
+      "dimensions": {
+        "service": "Amazon Simple Storage Service",
+        "region": "us-east-1"
+      },
+      "amount": "12.3456",
+      "currency": "USD"
+    },
+    {
+      "date": "2026-10-02",
+      "dimensions": {
+        "service": "AWS Lambda",
+        "region": "us-east-1"
+      },
+      "amount": "2.50",
+      "currency": "USD"
+    }
+  ]
+}

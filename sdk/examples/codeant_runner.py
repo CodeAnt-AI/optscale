@@ -3,7 +3,7 @@
 Install optscale-analysis[aws] into the same Python environment as this runner.
 The caller supplies already-assumed-role credentials. Recommendation jobs store
 result['state'] using existing per-tenant/account/region blob storage. Set mode
-to resources or anomalies to run those operations in separate CLI processes.
+to resources, anomalies or expenses to run those operations in separate CLI processes.
 """
 
 import json
@@ -16,7 +16,9 @@ import tempfile
 
 def run_optscale(credentials, region, previous_state=None, *, mode="recommendations",
                  rules=None, resource_types=None, anomaly_types=None,
-                 lookback_days=7, threshold_percent=30):
+                 lookback_days=7, threshold_percent=30, all_resource_types=False,
+                 start_date=None, end_date=None, group_by=None, cost_metric="UnblendedCost",
+                 services=None, billing_regions=None):
     with tempfile.TemporaryDirectory(prefix="optscale-") as directory:
         output = Path(directory) / "result.json"
         command = [sys.executable, "-m", "optscale_sdk", "--region", region,
@@ -26,6 +28,17 @@ def run_optscale(credentials, region, previous_state=None, *, mode="recommendati
             command.extend(["--rules", *rules])
         if resource_types is not None:
             command.extend(["--resource-types", *resource_types])
+        if all_resource_types:
+            command.append("--all-resource-types")
+        if mode == "expenses":
+            if not start_date or not end_date:
+                raise ValueError("Expenses require start/end dates")
+            command.extend(["--start-date", start_date, "--end-date", end_date,
+                            "--cost-metric", cost_metric])
+            for flag, values in (("--group-by", group_by), ("--services", services),
+                                 ("--billing-regions", billing_regions)):
+                if values is not None:
+                    command.extend([flag, *values])
         if anomaly_types is not None:
             command.extend(["--anomaly-types", *anomaly_types])
         if mode == "anomalies":

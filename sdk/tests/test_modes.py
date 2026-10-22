@@ -180,6 +180,13 @@ class LiveModesTests(unittest.TestCase):
             {"Dimensions": {"Key": "REGION", "Values": [REGION]}}]})
         self.assertEqual(request["TimePeriod"]["End"], (TARGET + timedelta(days=1)).isoformat())
         self.assertEqual(request["Metrics"], ["UnblendedCost"])
+        self.assertEqual(len(result["daily_expenses"]), 8)
+        self.assertEqual(result["daily_expenses"][0]["currency"], "USD")
+        self.ce.get_cost_and_usage.return_value = {"ResultsByTime": [
+            {**row, "Total": {"UnblendedCost": {"Amount": "100", "Unit": "USD"}}} for row in ce_rows()]}
+        no_spikes = scan_anomalies_aws(region=REGION)
+        self.assertEqual(no_spikes["findings"], [])
+        self.assertEqual(len(no_spikes["daily_expenses"]), 8)
 
     def test_account_mismatch_prevents_inventory_and_billing_calls(self):
         for operation in (collect_resources_aws, scan_anomalies_aws):

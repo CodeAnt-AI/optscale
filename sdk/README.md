@@ -1,7 +1,7 @@
 # OptScale analysis SDK
 
 An installable, service-free extraction of OptScale's AWS recommendations,
-resource inventory and daily anomaly checks for CodeAnt background scanners. Python 3.10+ (including CodeAnt's Python 3.11).
+resource inventory, daily billing and anomaly checks for CodeAnt background scanners. Python 3.10+ (including CodeAnt's Python 3.11).
 The core has **no runtime dependencies**; live AWS collection uses optional boto3.
 The wheel contains only `optscale_sdk`, not the OptScale platform, cloud-adapter
 dependency tree, databases, HTTP servers, queues, schedulers or UI.
@@ -39,7 +39,10 @@ or pass a boto3 Session to `scan_aws`. There are no credential command-line flag
 No AWS resources are created and no OptScale server URL is needed. Existing IAM
 access and network connectivity to regional AWS APIs are required.
 
-One invocation scans one account and one explicit region. CodeAnt owns fan-out,
+Inventory/recommendation invocations scan one account and one explicit region.
+Expenses are account-wide by default; `--region` selects the AWS client, not a
+billing-region filter. Run expenses once per account/date range, not once per
+inventory region, to avoid counting the same charges repeatedly. CodeAnt owns fan-out,
 scheduling and result/state storage. Use `--rules RULE_ID ...` to shard recommendations,
 `--resource-types TYPE ...` to shard inventory, and `--anomaly-types TYPE ...` to
 select anomaly checks. `--mode` defaults to `recommendations`, preserving existing
@@ -58,7 +61,8 @@ exit statuses. Live modes support `--timeout`, `--max-resources` and the AWS
 credential chain. Mode-specific flags from another operation fail explicitly.
 `python -m optscale_sdk` provides the same CLI. The Python equivalents are
 `analyze` / `scan_aws`, `inventory` / `collect_resources_aws`, and
-`detect_anomalies` / `scan_anomalies_aws`.
+`detect_anomalies` / `scan_anomalies_aws`, and
+`expenses_report` / `collect_expenses_aws`.
 
 ```python
 import boto3
@@ -89,14 +93,51 @@ does not start background threads that outlive the call.
 
 ## Resource inventory
 
-`--mode resources` returns EC2 instances, EBS volumes and allocated Elastic IPs,
+`--mode resources` retains the legacy default of EC2 instances, EBS volumes and allocated Elastic IPs,
 including tags and selected state/type/size fields. Inventory does not request
 CloudWatch, need observation history, estimate costs, or require resources to
 match a recommendation. Live output includes a normalized `snapshot`; replay
 it with `--mode resources --input snapshot.json`.
 
+To opt into inventory across services:
+
+```sh
+optscale-scan --mode resources --region us-east-1 --account-id 123456789012 \
+  --all-resource-types --output /tmp/resources.json
+# Or collect only selected types:
+optscale-scan --mode resources --region us-east-1 \
+  --resource-types rds_instance lambda_function s3_bucket dynamodb_table
+```
+
+Supported types:
+
+| Service | Types |
+| --- | --- |
+| EC2 | `instance`, `volume`, `elastic_ip` |
+| RDS | `rds_instance`, `rds_cluster` |
+| Lambda | `lambda_function` |
+| Elastic Load Balancing v2 | `load_balancer` (ALB/NLB/Gateway; excludes classic ELB) |
+| DynamoDB | `dynamodb_table` |
+| S3 | `s3_bucket` (regional listing of general-purpose buckets; excludes directory buckets) |
+| ECS / EKS | `ecs_cluster`, `eks_cluster` (cluster inventory, not tasks/pods) |
+| CloudWatch Logs | `log_group` |
+
+Live records include `service`, `region`, `account_id`, `id`, `arn`, and
+selected configuration fields. Lambda environment variables, endpoints,
+credentials, and raw AWS responses are never exported. Tags are included only
+when the selected describe/list operation returns them; omitted tags mean
+**uncollected**, not untagged. Collection time, modification time and resource
+creation time are not invented as first/last-observed history. S3 ARNs lack
+region/account, so normalized bucket records explicitly retain both for scope
+validation. Regional S3 listing needs boto3 >=1.40.50 (the AWS extra enforces it).
+The summary includes counts by type and ARN service; coverage is per selected
+type. Unsupported resource types remain outside scope, even when their charges
+appear in billing. `--all-resource-types` means all types in this table, not all
+AWS services. No new recommendation rules are implied by additional inventory.
+
 Offline inventory uses the same envelope and resource identities as recommendation
-snapshots. Only `id`, `arn`, and `type` are required on each record; metrics and
+snapshots. For regional ARNs, `id`, `arn`, and `type` are required; S3 also requires
+`account_id` and `region` matching the snapshot; metrics and
 unused timestamps are optional. The `collection` map must explicitly identify
 complete resource types. Resources are filtered with `--resource-types` in both
 live and offline modes. Missing collection evidence, invalid identities, duplicate
@@ -114,6 +155,74 @@ result = collect_resources_aws(region="us-east-1", account_id="123456789012",
                                types=["instance", "volume"])
 replay = inventory(result["snapshot"], types=["instance", "volume"])
 ```
+
+## Daily billing (independent of anomalies)
+
+```sh
+optscale-scan --mode expenses --region us-east-1 --account-id 123456789012 \
+  --start-date 2026-10-01 --end-date 2026-10-17 \
+  --group-by service region --cost-metric UnblendedCost \
+  --max-records 50000 --output /tmp/daily-costs.json
+```
+
+The start is inclusive and the end is exclusive, in UTC. Both dates are required
+for live collection; select 1–366 closed days (end <= today). AWS billing history
+availability still depends on the account. Default grouping is `service region`;
+choose one or two of `service`, `region`, `usage_type`. The metric defaults to
+`UnblendedCost`; `AmortizedCost`, `NetUnblendedCost`, `NetAmortizedCost` and
+`BlendedCost` are supported. Costs are independent of which inventory adapters
+or recommendation rules exist, so S3, RDS, Lambda, support/global and other
+services can appear without a matching inventory record.
+
+All services and billing regions are included by default. `--services` accepts
+exact AWS billing service names; `--billing-regions` explicitly restricts costs
+by region. A mandatory `LINKED_ACCOUNT` filter uses the STS-verified account,
+including when the caller has payer-wide permissions. Global/empty region keys
+are preserved rather than incorrectly reassigned to the SDK client region.
+This uses AWS [GetCostAndUsage](https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_GetCostAndUsage.html),
+including pagination over groups within the same day.
+
+Output has top-level `expenses` with every returned daily group, even if no
+anomaly exists. Each row contains `date`, `dimensions`, decimal-string `amount`,
+`currency`, `metric`, `account_id`, `estimated` and `complete`. Negative refunds
+and credits and zero amounts are preserved. `summary.totals_by_currency` sums
+returned rows separately by currency and is provisional whenever coverage is
+partial; it is not an independently fetched account total. Do not add different
+metrics, overlapping date ranges or grouped totals to their constituent rows.
+
+`coverage.days[DATE]` distinguishes a returned estimated day, a returned empty
+day, and a missing day. Missing days and failed/truncated pagination never become
+fabricated zero charges. Estimated days are returned for display but cause exit
+2/partial coverage; no finalization guarantee is implied. There are no synthetic
+zero rows for absent service/region combinations. Successful rows survive
+permission errors, resource limits, malformed records and deadlines; inspect
+coverage before using totals. Exceptions are redacted like other modes.
+
+Offline replay uses `expenses_report(snapshot)` or
+`--mode expenses --input sdk/examples/expenses.json`. The example is synthetic.
+The normalized snapshot contains `schema_version`, `account_id`, `region`,
+`collected_at`, `start_date`, `end_date`, `group_by`, `metric`, `collection_complete`,
+`days` (returned/estimated metadata) and `expenses` (date/dimensions/amount/currency).
+Live output is already a validated report and needs no private snapshot to
+render its daily series. Live anomaly mode also now exposes `daily_expenses`
+at top level for the existing regional lookback window, including non-spike days.
+
+### CodeAnt backend adoption
+
+This change is in the standalone SDK/CLI only. To consume it, update the backend's
+vendored SDK, allow the new resource types in validation, and add an expenses
+operation/artifact whose payload preserves `expenses`, `coverage`, `summary`,
+`metric`, date scope and filters. Existing wrappers that select only
+`findings`/`resources` will otherwise drop the new billing fields. For expanded
+inventory, pass explicit types or `--all-resource-types`; existing default
+commands intentionally retain their three EC2 types. The frontend must consume
+these fields to render daily costs and additional services.
+
+Cost Explorer provides service/region aggregates here, not costs per resource.
+This does **not** ingest CUR, reproduce OptScale's billing database, assign
+service totals to resources, or implement every hosted OptScale feature.
+Resource-level cost allocation still requires a separate billing source such as
+CUR. Pool/owner/constraint state remains owned by the embedding application.
 
 ## Anomaly detection
 
@@ -238,8 +347,8 @@ scratch space; CodeAnt's existing blob storage can retain state between Lambdas.
 
 Every result has `schema_version: 1`, `engine: "optscale"`, `account_id`, `region`,
 `collected_at`, `status`, `errors`, and `coverage`. Recommendation and anomaly
-results contain `findings`; inventory contains `resources`. Live modes include
-`snapshot`; only live recommendations return `state`. API responses/credentials
+results contain `findings`; inventory contains `resources`. Live recommendations, resources and anomalies include
+`snapshot`; expenses exports daily rows directly. Only live recommendations return `state`. API responses/credentials
 are not copied wholesale. The following rule and finding fields describe
 recommendation mode; other modes have the coverage/identity contracts above.
 
@@ -266,7 +375,7 @@ Custodian findings for the same resource. Do not sum overlapping savings.
 Findings include the CodeAnt-style fields `resource_arn`, `action`, `title`,
 `rationale`, `evidence`, `estimated_monthly_savings`, `savings_source`, `confidence`,
 `risk_notes`, and `related_findings`, plus rule/account/region/currency fields.
-Resource types are `volume`, `elastic_ip`, `instance`; map to any UI-specific
+Recommendation resource types are `volume`, `elastic_ip`, `instance`; inventory supports the additional types above. Map to any UI-specific
 labels at the CodeAnt boundary. This is an integration-ready scanner contract,
 not an already-wired backend change.
 
@@ -274,7 +383,7 @@ API timeouts and retries are bounded. The 10,000-resource default cap applies to
 inventory records across selected rules; `--max-resources` changes it. Larger
 accounts may need narrower rule shards or another execution budget. The SDK
 does not silently truncate with success or promise arbitrary accounts fit one
-Lambda invocation. There is no resource-page resume token in v0.1.
+Lambda invocation. There is no resource-page resume token; partial scans must be rerun or split into narrower shards.
 
 ## Offline input and cost enrichment
 
@@ -327,11 +436,21 @@ are rejected. No threshold configuration is stored globally between invocations.
 The caller supplies an existing role with read access to selected operations:
 `ec2:DescribeVolumes`, `ec2:DescribeAddresses`, `ec2:DescribeInstances`, and
 `cloudwatch:GetMetricStatistics` (idle instances only). The scanner also calls
-`sts:GetCallerIdentity` before collection to verify its account. Resource mode
-needs only the selected EC2 Describe operations, without CloudWatch. Live anomaly
-mode needs `ce:GetCostAndUsage` and STS, without EC2 or CloudWatch. It does not
+`sts:GetCallerIdentity` before collection to verify its account. The legacy resource types
+need only the selected EC2 Describe operations, without CloudWatch. Live anomaly
+and expenses modes need `ce:GetCostAndUsage` and STS, without EC2 or CloudWatch. It does not
 perform AssumeRole itself, request billing exports, create metrics, or enroll
 the account in an optimization service.
+
+Additional inventory permissions depend on the selected types:
+`rds:DescribeDBInstances`, `rds:DescribeDBClusters`, `lambda:ListFunctions`,
+`elasticloadbalancing:DescribeLoadBalancers`, `dynamodb:ListTables`,
+`dynamodb:DescribeTable`, `s3:ListAllMyBuckets`, `ecs:ListClusters`,
+`eks:ListClusters`, `eks:DescribeCluster`, `logs:DescribeLogGroups`.
+No new permissions are granted automatically. A denied service leaves that
+coverage incomplete and retains successful results from other services.
+The [S3 regional listing API](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/list_buckets.html)
+requires the regional endpoint and does not cover directory buckets.
 
 ## Development
 

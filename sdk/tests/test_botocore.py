@@ -116,3 +116,33 @@ class BotocoreTests(unittest.TestCase):
             self.assertEqual(len(result["findings"]), 1)
             sts.assert_no_pending_responses()
             ce.assert_no_pending_responses()
+
+
+@unittest.skipIf(boto3 is None, "Install aws extra for billing contract tests")
+class ExpenseBotocoreTests(unittest.TestCase):
+    clients = BotocoreTests.clients
+    identity = BotocoreTests.identity
+    def test_grouped_daily_billing_api_and_same_day_pagination(self):
+        from optscale_sdk import collect_expenses_aws
+        clients = self.clients(("sts", "ce"))
+        request = {"TimePeriod": {"Start": "2020-01-01", "End": "2020-01-02"},
+                   "Granularity": "DAILY", "Metrics": ["UnblendedCost"],
+                   "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}, {"Type": "DIMENSION", "Key": "REGION"}],
+                   "Filter": {"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": [ACCOUNT]}}}
+        def response(service, token=None):
+            result = {"ResultsByTime": [{"TimePeriod": request["TimePeriod"], "Estimated": False,
+                                        "Groups": [{"Keys": [service, ""], "Metrics": {"UnblendedCost": {"Amount": "0.25", "Unit": "USD"}}}]}]}
+            if token:
+                result["NextPageToken"] = token
+            return result
+        with Stubber(clients["sts"]) as sts, Stubber(clients["ce"]) as ce:
+            self.identity(sts)
+            ce.add_response("get_cost_and_usage", response("Amazon Simple Storage Service", "next"), request)
+            ce.add_response("get_cost_and_usage", response("Amazon Relational Database Service"), {**request, "NextPageToken": "next"})
+            with patch("optscale_sdk.aws._clients", return_value=clients):
+                result = collect_expenses_aws(region=REGION, account_id=ACCOUNT,
+                                              start_date="2020-01-01", end_date="2020-01-02")
+            self.assertEqual(result["status"], "complete", result["errors"])
+            self.assertEqual(result["summary"]["totals_by_currency"], {"USD": "0.50"})
+            sts.assert_no_pending_responses()
+            ce.assert_no_pending_responses()
