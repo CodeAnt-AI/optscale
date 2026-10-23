@@ -11,6 +11,7 @@ from .anomalies import parse_date
 
 COST_METRICS = ("UnblendedCost", "AmortizedCost", "NetUnblendedCost", "NetAmortizedCost", "BlendedCost")
 GROUP_DIMENSIONS = {"service": "SERVICE", "region": "REGION", "usage_type": "USAGE_TYPE"}
+INVALID_COST = "Invalid cost"
 
 
 def expense_options(start_date, end_date, group_by=None, metric="UnblendedCost", *, now=None):
@@ -31,13 +32,13 @@ def _amount(value):
     if not isinstance(value, str):
         raise TypeError("Cost must be a decimal string")
     if len(value) > 128:
-        raise ValueError("Invalid cost")
+        raise ValueError(INVALID_COST)
     try:
         amount = Decimal(value)
     except InvalidOperation as error:
-        raise ValueError("Invalid cost") from error
+        raise ValueError(INVALID_COST) from error
     if not amount.is_finite() or abs(amount.adjusted()) > 100:
-        raise ValueError("Invalid cost")
+        raise ValueError(INVALID_COST)
     return amount
 
 
