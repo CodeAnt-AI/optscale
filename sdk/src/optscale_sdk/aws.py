@@ -133,7 +133,13 @@ def scan_aws(*, region, session=None, account_id=None, rules=None, options=None,
         raise ValueError("max_resources must be an integer")
     number(max_history_gap_seconds, "max_history_gap_seconds", minimum=1, maximum=30 * DAY)
     deadline = time.monotonic() + timeout_seconds
-    collector = _Collector(_clients(session, region), deadline, max_resources)
+    from .inventory_aws import COLLECTORS, collect_type
+    from .recommendations import enrich
+
+    services = {"sts", "ec2", "cloudwatch"}
+    services.update(COLLECTORS[config["resource_type"]][0]
+                    for config in configured.values() if config["resource_type"] in COLLECTORS)
+    collector = _Collector(_clients(session, region, sorted(services)), deadline, max_resources)
     identity = collector.call("sts", "get_caller_identity")
     if account_id is not None and identity["Account"] != account_id:
         raise ValueError("AWS credentials do not match the requested account")
@@ -153,6 +159,23 @@ def scan_aws(*, region, session=None, account_id=None, rules=None, options=None,
     for rule, config in configured.items():
         resource_type = config["resource_type"]
         snapshot["collection"][resource_type] = False
+        if resource_type in COLLECTORS:
+            try:
+                for resource in collect_type(collector, resource_type, account_id, region, partition):
+                    snapshot["resources"].append(resource)
+                    try:
+                        enrich(collector, resource, config, now)
+                    except Exception as error:
+                        resource["recommendation_collection_failed"] = True
+                        code = _collection_error(error)
+                        collection_errors.append({"rule_id": rule, "resource_id": resource["id"], "code": code})
+                        if isinstance(error, (TimeoutError, OverflowError)):
+                            raise
+                snapshot["collection"][resource_type] = True
+            except Exception as error:
+                timed_out = timed_out or isinstance(error, TimeoutError)
+                collection_errors.append({"rule_id": rule, "code": _collection_error(error)})
+            continue
         method, key, id_field, arn_type = {
             "volume": ("describe_volumes", "Volumes", "VolumeId", "volume"),
             "elastic_ip": ("describe_addresses", "Addresses", "AllocationId", "elastic-ip"),
@@ -241,8 +264,8 @@ def _collection_error(error):
 def collect_resources_aws(*, region, session=None, account_id=None, types=None,
                           timeout_seconds=600, max_resources=10000):
     """Collect selected AWS resource types without recommendation eligibility checks."""
-    from .resources import LEGACY_RESOURCE_TYPES, inventory, resource_types
     from .inventory_aws import COLLECTORS, collect_type
+    from .resources import LEGACY_RESOURCE_TYPES, inventory, resource_types
 
     selected = resource_types(types)
     services = tuple(dict.fromkeys(["sts"] + [COLLECTORS[kind][0] if kind in COLLECTORS else "ec2" for kind in selected]))

@@ -22,7 +22,7 @@ def resource(kind="volume", identifier="vol-123"):
 def snapshot(*resources):
     return {"schema_version": 1, "account_id": ACCOUNT, "region": REGION,
             "collected_at": NOW, "resources": list(resources),
-            "collection": {"volume": True, "elastic_ip": True, "instance": True}}
+            "collection": {config["resource_type"]: True for config in RULES.values()}}
 
 
 def instance():

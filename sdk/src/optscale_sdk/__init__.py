@@ -8,4 +8,4 @@ from .expenses import collect_expenses_aws, expenses_report
 
 __all__ = ["RULES", "analyze", "scan_aws", "inventory", "collect_resources_aws",
            "detect_anomalies", "scan_anomalies_aws", "collect_expenses_aws", "expenses_report"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

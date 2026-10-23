@@ -71,7 +71,8 @@ def collect_type(collector, kind, account_id, region, partition):
         elif kind == "dynamodb_table":
             table = collector.call("dynamodb", "describe_table", TableName=raw)["Table"]
             record.update(id=table["TableName"], arn=table["TableArn"], state=table["TableStatus"],
-                          size_bytes=table.get("TableSizeBytes"), item_count=table.get("ItemCount"))
+                          size_bytes=table.get("TableSizeBytes"), item_count=table.get("ItemCount"),
+                          billing_mode=table.get("BillingModeSummary", {}).get("BillingMode", "PROVISIONED"))
         elif kind == "s3_bucket":
             record.update(id=raw["Name"], arn=f"arn:{partition}:s3:::{raw['Name']}")
             if raw.get("BucketRegion", region) != region:

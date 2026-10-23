@@ -315,9 +315,42 @@ Differences from platform behavior are deliberate:
 - Findings recommend review; the SDK never deletes, stops or modifies resources.
 - OptScale pool/owner/dismissal state is not replicated. CodeAnt owns that state.
 
-Rightsizing, RI/Savings Plans analysis, S3 analysis, snapshot/AMI dependency
+Rightsizing, RI/Savings Plans analysis, CUR-based abandoned S3 bucket analysis, snapshot/AMI dependency
 analysis, billing imports, notifications and other cloud providers are **not yet
 extracted**. Unknown rule IDs fail explicitly rather than silently doing nothing.
+
+### Additional CLI-native AWS recommendations (SDK 0.3.0)
+
+Default recommendation scans now run all nine rules, across seven AWS services.
+Use `--rules RULE_ID ...` to restrict the checks and required IAM permissions.
+These six additions are explicit CLI checks; they do not require the hosted
+OptScale databases, and do not claim parity with every hosted optimizer rule.
+
+| Rule | Evidence and default eligibility |
+| --- | --- |
+| `idle_rds_instances` | Available RDS instance; 7 days of hourly maxima: CPU ≤5%, connections/read IOPS/write IOPS all zero |
+| `abandoned_load_balancers` | Active ALB/NLB; 7 days of hourly maximum request/flow count and processed bytes all zero |
+| `idle_dynamodb_tables` | Active provisioned table; 7 days of hourly maximum consumed reads/writes all zero; on-demand tables excluded |
+| `underused_lambda_provisioned_concurrency` | READY allocated concurrency unchanged for 7 days; maximum utilization ≤10% for each listed version/alias |
+| `s3_incomplete_multipart_uploads` | One or more incomplete multipart uploads initiated more than 7 days ago, with paginated bucket evidence |
+| `log_groups_without_retention` | Stored bytes greater than zero and no retention policy; a current configuration check |
+
+```bash
+optscale-scan --region ap-south-1 --account-id 123456789012 \
+  --rules log_groups_without_retention s3_incomplete_multipart_uploads
+```
+
+Metric checks require at least 90% of hourly buckets **and** expected minute
+samples. Missing/sparse metrics, AccessDenied, changing/recent Lambda allocations,
+pagination limits and deadlines leave the affected check incomplete. Lambda and
+load balancer metrics can be absent during inactivity: absence never proves zero
+usage. Valid findings from other resources/qualifiers are retained.
+
+All additional checks recommend review, with resource ARN, service, rule and
+supporting evidence. Savings remain `null`: service-level billing totals and the
+full cost of a resource are not a justified estimate for these specific changes.
+RDS/Aurora cluster rightsizing, classic ELB, on-demand Lambda memory rightsizing,
+ECS/EKS optimization and commitment purchases remain outside these checks.
 
 ## Observation history
 
@@ -447,6 +480,12 @@ Additional inventory permissions depend on the selected types:
 `elasticloadbalancing:DescribeLoadBalancers`, `dynamodb:ListTables`,
 `dynamodb:DescribeTable`, `s3:ListAllMyBuckets`, `ecs:ListClusters`,
 `eks:ListClusters`, `eks:DescribeCluster`, `logs:DescribeLogGroups`.
+New recommendation checks need their corresponding inventory permissions, plus
+`cloudwatch:GetMetricStatistics` for RDS, ALB/NLB, DynamoDB and Lambda;
+`lambda:ListProvisionedConcurrencyConfigs` for Lambda; and
+`s3:ListBucketMultipartUploads` on buckets for S3. Log retention checks only need
+`logs:DescribeLogGroups`. All operations are read-only and use the verified STS
+account; S3 upload requests also send `ExpectedBucketOwner`.
 No new permissions are granted automatically. A denied service leaves that
 coverage incomplete and retains successful results from other services.
 The [S3 regional listing API](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/list_buckets.html)

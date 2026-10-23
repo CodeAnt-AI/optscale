@@ -9,6 +9,10 @@ Missing history/metrics is explicitly incomplete, never interpreted as zero.
 import math
 import re
 
+from .inventory_aws import ARN_TYPES
+from .recommendations import RULES as ADDITIONAL_RULES
+from .recommendations import match as match_additional
+
 DAY = 86400
 RULES = {
     "volumes_not_attached_for_a_long_time": {
@@ -26,6 +30,7 @@ RULES = {
         "action": "review", "title": "Idle EC2 instance",
     },
 }
+RULES.update(ADDITIONAL_RULES)
 
 
 def number(value, name, minimum=0, maximum=None):
@@ -61,7 +66,7 @@ def rule_options(rules=None, options=None):
             raise ValueError(f"Unsupported options for {rule}")
         configured[rule] = {**defaults, **overrides}
         for key in allowed:
-            maximum = {"days_threshold": 30, "cpu_percent_threshold": 100,
+            maximum = {"days_threshold": 30, "cpu_percent_threshold": 100, "utilization_percent_threshold": 100,
                        "minimum_metric_coverage": 1}.get(key)
             minimum = 1 if key == "days_threshold" else 0
             number(configured[rule][key], key, minimum, maximum)
@@ -73,6 +78,8 @@ def rule_options(rules=None, options=None):
 def _match(resource, config, now):
     """Return (match, unavailable_reason, evidence), independently of cost."""
     resource_type = config["resource_type"]
+    if resource_type in ARN_TYPES:
+        return match_additional(resource, config, now)
     cutoff = now - config["days_threshold"] * DAY
     if resource_type in {"volume", "elastic_ip"}:
         if not isinstance(resource.get("unused"), bool):
@@ -123,7 +130,7 @@ def _finding(resource, rule, config, snapshot, evidence):
     cost = resource.get("cost")
     savings = None
     currency = None
-    if cost is not None:
+    if cost is not None and rule not in ADDITIONAL_RULES:
         if not isinstance(cost, dict):
             raise ValueError("cost must be an object")
         daily = number(cost.get("average_daily_cost"), "average_daily_cost")
@@ -136,12 +143,13 @@ def _finding(resource, rule, config, snapshot, evidence):
         "engine": "optscale", "rule_id": rule,
         "resource_arn": resource["arn"], "resource_id": resource["id"],
         "resource_type": resource["type"], "region": snapshot["region"],
+        "service": resource["arn"].split(":")[2],
         "account_id": snapshot["account_id"], "action": config["action"],
         "title": config["title"],
-        "rationale": f"Matches {rule} over a {config['days_threshold']}-day window.",
+        "rationale": evidence.get("reason", f"Matches {rule} over a {config['days_threshold']}-day window."),
         "evidence": [{"source": "optscale", "detail": evidence}],
         "estimated_monthly_savings": savings, "currency": currency,
-        "savings_source": "provided_daily_cost_30_days" if cost is not None else None,
+        "savings_source": "provided_daily_cost_30_days" if savings is not None else None,
         "confidence": "medium", "related_findings": [],
         "risk_notes": "Review ownership and workload requirements before changing resources. "
                       "Savings are gross estimates; commitments may prevent realized savings.",
@@ -186,20 +194,34 @@ def analyze(snapshot, *, rules=None, options=None):
                 if not isinstance(identifier, str) or not identifier or identifier in seen:
                     raise ValueError("Missing or duplicate resource ID")
                 seen.add(identifier)
-                kind = {"volume": "volume", "elastic_ip": "elastic-ip",
-                        "instance": "instance"}[resource_type]
-                expected = f":ec2:{snapshot['region']}:{snapshot['account_id']}:{kind}/{identifier}"
-                if not isinstance(arn, str) or not re.fullmatch(r"arn:aws(?:-[a-z]+)*" + re.escape(expected), arn):
+                if resource_type in ARN_TYPES:
+                    service, prefix = ARN_TYPES[resource_type]
+                    expected = (f":s3:::{identifier}" if resource_type == "s3_bucket" else
+                                f":{service}:{snapshot['region']}:{snapshot['account_id']}:{prefix}{identifier}")
+                    # ELB resource IDs are names; the ARN also includes its type and generated ID.
+                    if resource_type == "load_balancer":
+                        expected = f":{service}:{snapshot['region']}:{snapshot['account_id']}:{prefix}"
+                        expected += r"(?:app|net)/" + re.escape(identifier) + r"/[^\s/:]+"
+                        expected_pattern = expected
+                    else:
+                        expected_pattern = re.escape(expected)
+                    if (resource.get("account_id") != snapshot["account_id"]
+                            or resource.get("region") != snapshot["region"]):
+                        raise ValueError("Resource ownership does not match snapshot scope")
+                else:
+                    kind = {"volume": "volume", "elastic_ip": "elastic-ip", "instance": "instance"}[resource_type]
+                    expected_pattern = re.escape(f":ec2:{snapshot['region']}:{snapshot['account_id']}:{kind}/{identifier}")
+                if not isinstance(arn, str) or not re.fullmatch(r"arn:aws(?:-[a-z]+)*" + expected_pattern, arn):
                     raise ValueError("Resource ARN does not match snapshot scope")
                 matches, reason, evidence = _match(resource, config, now)
+                if matches:
+                    findings.append(_finding(resource, rule, config, snapshot, evidence))
+                    stats["findings"] += 1
                 if reason:
                     stats["complete"] = False
                     stats["skipped"] += 1
                     errors.append({"rule_id": rule, "resource_id": identifier, "code": reason})
                     continue
-                if matches:
-                    findings.append(_finding(resource, rule, config, snapshot, evidence))
-                    stats["findings"] += 1
                 stats["evaluated"] += 1
             except (ValueError, TypeError, KeyError):
                 stats["complete"] = False

@@ -59,7 +59,8 @@ class BotocoreTests(unittest.TestCase):
                 stack.enter_context(stub)
             stack.enter_context(patch("optscale_sdk.aws._clients", return_value=clients))
             stack.enter_context(patch("optscale_sdk.aws.time.time", return_value=NOW))
-            result = scan_aws(region=REGION, account_id=ACCOUNT)
+            result = scan_aws(region=REGION, account_id=ACCOUNT,
+                              rules=[VOLUME_RULE, "obsolete_ips", INSTANCE_RULE])
             self.assertEqual(result["status"], "complete", result["errors"])
             self.assertEqual(len(result["findings"]), 1)
             self.assertEqual(result["findings"][0]["rule_id"], INSTANCE_RULE)
